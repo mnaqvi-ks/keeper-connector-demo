@@ -52,7 +52,9 @@ Click the **Deploy to Azure** button at the top of this page, then fill in:
 | **Keeper Config** | Paste the Base64-encoded one-time token from step 1 |
 | **Location** | Azure region (defaults to the resource group's region) |
 
-Click **Review + create** and wait for deployment to complete (approximately 3-5 minutes). The ARM template provisions every resource listed above **and** automatically deploys the middleware code from this repo's [`keeperLogicAppMiddleware/`](./keeperLogicAppMiddleware) folder using the `PROJECT` app setting and Oryx remote build.
+Click **Review + create** and wait for deployment to complete (approximately 5-7 minutes). The ARM template provisions every resource listed above **and** automatically deploys the middleware code from this repo's [`keeperLogicAppMiddleware/`](./keeperLogicAppMiddleware) folder. Code deployment is handled by a `Microsoft.Resources/deploymentScripts` resource that downloads the repo from GitHub during the deployment, packages the subfolder, and pushes it via Kudu zip-deploy with a server-side Oryx build -- no manual `func publish` step required.
+
+> **Permissions required:** The deploying account needs **Owner** (or **User Access Administrator** plus **Contributor**) on the resource group, because the ARM template creates a role assignment for the deployment script's managed identity. Contributor alone is not sufficient. If you only have Contributor, follow the [Manual Setup (Alternative)](#manual-setup-alternative) path below instead.
 
 ### 3. Get the Function Host Key
 

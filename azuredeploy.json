@@ -42,9 +42,30 @@
     "storageAccountName": "[concat('stksm', uniqueString(resourceGroup().id))]",
     "keyVaultName": "[concat('kv-ksm-', uniqueString(resourceGroup().id))]",
     "appServicePlanName": "[concat(parameters('functionAppName'), '-plan')]",
-    "ksmSecretName": "KSM-CONFIG"
+    "ksmSecretName": "KSM-CONFIG",
+    "deployScriptIdentityName": "[concat(parameters('functionAppName'), '-deploy-id')]",
+    "contributorRoleId": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Authorization/roleDefinitions/b24988ac-6180-42a0-ab88-20f7382dd24c')]"
   },
   "resources": [
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[variables('deployScriptIdentityName')]",
+      "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceGroup().id, variables('deployScriptIdentityName'), 'Contributor')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployScriptIdentityName'))]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[variables('contributorRoleId')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployScriptIdentityName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    },
     {
       "type": "Microsoft.Storage/storageAccounts",
       "apiVersion": "2023-01-01",
@@ -153,10 +174,6 @@
             {
               "name": "ENABLE_ORYX_BUILD",
               "value": "true"
-            },
-            {
-              "name": "PROJECT",
-              "value": "keeperLogicAppMiddleware"
             }
           ]
         }
@@ -185,17 +202,35 @@
       }
     },
     {
-      "type": "Microsoft.Web/sites/sourcecontrols",
-      "apiVersion": "2023-01-01",
-      "name": "[concat(parameters('functionAppName'), '/web')]",
+      "type": "Microsoft.Resources/deploymentScripts",
+      "apiVersion": "2023-08-01",
+      "name": "deployFunctionCode",
+      "location": "[parameters('location')]",
+      "kind": "AzureCLI",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('deployScriptIdentityName'))]": {}
+        }
+      },
       "dependsOn": [
         "[resourceId('Microsoft.Web/sites', parameters('functionAppName'))]",
-        "[resourceId('Microsoft.KeyVault/vaults/accessPolicies', variables('keyVaultName'), 'add')]"
+        "[resourceId('Microsoft.KeyVault/vaults/accessPolicies', variables('keyVaultName'), 'add')]",
+        "[resourceId('Microsoft.Authorization/roleAssignments', guid(resourceGroup().id, variables('deployScriptIdentityName'), 'Contributor'))]"
       ],
       "properties": {
-        "repoUrl": "[parameters('repoUrl')]",
-        "branch": "[parameters('repoBranch')]",
-        "isManualIntegration": true
+        "azCliVersion": "2.61.0",
+        "timeout": "PT15M",
+        "retentionInterval": "PT1H",
+        "cleanupPreference": "OnSuccess",
+        "environmentVariables": [
+          { "name": "REPO_URL", "value": "[parameters('repoUrl')]" },
+          { "name": "REPO_BRANCH", "value": "[parameters('repoBranch')]" },
+          { "name": "FUNCTION_APP_NAME", "value": "[parameters('functionAppName')]" },
+          { "name": "RESOURCE_GROUP", "value": "[resourceGroup().name]" },
+          { "name": "PROJECT_FOLDER", "value": "keeperLogicAppMiddleware" }
+        ],
+        "scriptContent": "set -e\nREPO_PATH=$(echo $REPO_URL | sed 's|https://github.com/||' | sed 's|/$||')\nREPO_NAME=$(basename $REPO_PATH)\nZIP_URL=\"https://github.com/$REPO_PATH/archive/refs/heads/$REPO_BRANCH.zip\"\necho \"[1/4] Downloading $ZIP_URL\"\ncurl -fsSL -o /tmp/repo.zip \"$ZIP_URL\"\necho \"[2/4] Extracting\"\nmkdir -p /tmp/extracted\nunzip -q /tmp/repo.zip -d /tmp/extracted\nSRC=\"/tmp/extracted/${REPO_NAME}-${REPO_BRANCH}/${PROJECT_FOLDER}\"\necho \"[3/4] Packaging $SRC\"\ncd \"$SRC\"\nzip -rq /tmp/function.zip .\necho \"[4/4] Deploying to $FUNCTION_APP_NAME\"\naz functionapp deployment source config-zip -g \"$RESOURCE_GROUP\" -n \"$FUNCTION_APP_NAME\" --src /tmp/function.zip --build-remote true\necho 'Deployment complete.'"
       }
     }
   ],
