@@ -86,9 +86,26 @@ Three ready-to-deploy Consumption Logic Apps live under [`workflowTemplates/`](w
 - **`create-secret`** -- HTTP-triggered. POST a secret payload (`folder_uid`, `title`, `login`, `password`, `url`, `notes`) and the response body is the newly created secret JSON (including its UID).
 - **`update-secret`** -- Recurrence-triggered. Stamps `Updated at <utcNow()>` into the `notes` field of a single secret on a schedule -- a tiny smoke test for the connector + middleware.
 
-### Deploy
+Each template creates **only the Logic App** and binds it to an existing Keeper API connection -- so the order of operations is:
 
-Click any of the buttons below (or use the equivalent CLI line) after the middleware Function App from the Quick Start is up:
+1. Create the API connection once (Step 1 below).
+2. Deploy any of the workflow templates, passing that connection's name (Step 2).
+
+### Step 1 -- Create the Keeper API connection (one time per resource group)
+
+This step is what [Step 4 of the Quick Start](#4-create-the-connector-connection) walks through. The short version:
+
+1. Azure portal -> **API Connections** -> **+ Add**.
+2. Search for **"Keeper Secrets Manager"** (certified connector) or your custom connector by display name and pick it.
+3. Fill the form fields the connector shows -- typically the Function App hostname (e.g. `keeper-middleware-acme.azurewebsites.net`) and the Function App's default host key.
+4. Give the connection a memorable name (e.g. `keeper-conn`) and click **Create**.
+5. Confirm Status is **Connected** in the API Connections list.
+
+You'll reuse this single connection for all three workflows below.
+
+### Step 2 -- Deploy a workflow
+
+Click any of the buttons below (or use the equivalent CLI line):
 
 | Workflow | Deploy |
 |---|---|
@@ -107,36 +124,16 @@ az deployment group create \
 
 ### Required inputs
 
-Edit the placeholders in each workflow's [`azuredeploy.parameters.json`](workflowTemplates) before deploying. The fields are:
+Edit the placeholders in each workflow's `azuredeploy.parameters.json` before deploying:
 
-- **`functionAppHostname`** -- e.g. `keeper-middleware-acme.azurewebsites.net` (your Quick Start Function App).
-- **`functionHostKey`** -- the default host key from **App keys** (same value used by the connector).
+- **`connectionName`** -- the exact name of the connection you created in Step 1 (it must already exist in the same resource group you're deploying the Logic App into).
 - **`secretUid`** -- *(update-secret only)* UID of the Keeper secret the recurrence run will stamp.
-- **`keeperApiIdOverride`** -- leave `""` once the certified connector ships; otherwise set to your custom-connector resource ID (see below).
 
-`connectionName` and `logicAppName` aren't in the parameters file -- they fall back to template defaults (`keeper-secrets-manager` and `la-keeper-<workflow>-sample`). Add them to the parameters file only if you want to override.
+That's all the templates need. `logicAppName` and `location` fall back to defaults (`la-keeper-<workflow>-sample` and the resource group's location); add them to the parameters file only if you want to override.
 
 ### Reusing one connection across workflows
 
-`Microsoft.Web/connections` is idempotent in a resource group. Pass the **same `connectionName`** when deploying all three templates and ARM updates the existing connection in place rather than creating three separate ones -- you end up with one shared `keeper-secrets-manager` connection wired to every workflow.
-
-### Pre-cert testing against a custom connector
-
-Until the certified **Keeper Secrets Manager** connector is published, the templates' default `managedApis/keeper-secrets-manager` reference will not resolve. To test against your own custom connector, set `keeperApiIdOverride` in the parameters file to the resource ID of your `Microsoft.Web/customApis/<name>`. Find it with:
-
-```bash
-az resource list --resource-type Microsoft.Web/customApis --query "[].id" -o tsv
-```
-
-Then update the workflow's `azuredeploy.parameters.json`:
-
-```json
-"keeperApiIdOverride": {
-  "value": "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Web/customApis/<your-connector>"
-}
-```
-
-Deploy into the **same subscription as your custom connector** (`Microsoft.Web/connections` cannot reference a `customApis` resource in a different subscription). Once the certified connector ships, set `keeperApiIdOverride` back to `""` and the default just works.
+The same connection works for all three workflows. Pass the same `connectionName` value to each deploy and they all bind to the same `Microsoft.Web/connections` resource -- one set of credentials, three workflows.
 
 ---
 
