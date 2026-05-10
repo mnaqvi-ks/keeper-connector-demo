@@ -1,6 +1,6 @@
-# Keeper Secrets Manager -- Azure Function Middleware
+# Azure Logic Apps Connector -- Function Middleware
 
-An Azure Function App that acts as middleware between **Azure Logic Apps / Power Automate** and the **Keeper Secrets Manager (KSM)** SDK. Deploy it to your Azure subscription with a single click, then create a connection using the published [Keeper Secrets Manager connector](https://github.com/microsoft/PowerPlatformConnectors/tree/dev/certified-connectors/KeeperSecretsManager) <!-- TODO: update once certification PR is merged --> for zero-knowledge secrets management in your workflows.
+An Azure Function App that acts as middleware between **Azure Logic Apps / Power Automate** and the **Keeper Secrets Manager (KSM)** SDK. Deploy it to your Azure subscription with a single click, then create a connection using the certified **Keeper Secrets Manager** connector available in the Microsoft Power Platform / Azure Logic Apps connector gallery.
 
 [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fmnaqvi-ks%2Fkeeper-connector-demo%2Fmain%2Fazuredeploy.json)
 
@@ -10,19 +10,19 @@ An Azure Function App that acts as middleware between **Azure Logic Apps / Power
 
 | Resource | Purpose |
 |---|---|
-| **Azure Function App** | Python 3.11, Linux Consumption plan, System Managed Identity |
-| **App Service Plan** | Consumption (Y1) plan that hosts the Function App |
+| **Azure Function App** | Python 3.11, Linux Consumption plan, hosts the middleware code |
 | **Azure Key Vault** | Stores your KSM config token as a secret (`KSM-CONFIG`) |
 | **Storage Account** | Required by the Azure Functions runtime |
-| **Key Vault Access Policy** | Grants the Function App `get` permission on Key Vault secrets via its managed identity |
 
-All resources enforce **HTTPS only** and **TLS 1.2+**. The middleware code from [`keeperLogicAppMiddleware/`](./keeperLogicAppMiddleware) is built and deployed onto the Function App as part of the same one-click action.
+Plus supporting resources: an App Service Plan, a Key Vault access policy for the Function App's managed identity, and a temporary User-Assigned Managed Identity + Role Assignment + Deployment Script that pushes the middleware code into the Function App during provisioning (auto-cleaned on success).
+
+All resources enforce **HTTPS only** and **TLS 1.2+**.
 
 ---
 
 ## Prerequisites
 
-1. **Azure subscription** with permission to create resources (Contributor role on a resource group).
+1. **Azure subscription** -- **Owner** on a resource group for the one-click deploy (it creates a role assignment). **Contributor** alone works for the [Manual Setup](#manual-setup-alternative) path.
 2. **Keeper Enterprise** account (or Keeper Business) with Secrets Manager enabled.
 3. **Keeper Secrets Manager Application** created in the Keeper Admin Console with at least one shared folder.
 4. **One-Time Access Token** generated for the KSM application -- this is the Base64-encoded config string the deployment needs.
@@ -52,9 +52,9 @@ Click the **Deploy to Azure** button at the top of this page, then fill in:
 | **Keeper Config** | Paste the Base64-encoded one-time token from step 1 |
 | **Location** | Azure region (defaults to the resource group's region) |
 
-Click **Review + create** and wait for deployment to complete (approximately 5-7 minutes). The ARM template provisions every resource listed above **and** automatically deploys the middleware code from this repo's [`keeperLogicAppMiddleware/`](./keeperLogicAppMiddleware) folder. Code deployment is handled by a `Microsoft.Resources/deploymentScripts` resource that downloads the repo from GitHub during the deployment, packages the subfolder, and pushes it via Kudu zip-deploy with a server-side Oryx build -- no manual `func publish` step required.
+Click **Review + create** and wait ~5-7 minutes. The template provisions all resources and deploys the middleware code automatically -- no `func publish` step needed.
 
-> **Permissions required:** The deploying account needs **Owner** (or **User Access Administrator** plus **Contributor**) on the resource group, because the ARM template creates a role assignment for the deployment script's managed identity. Contributor alone is not sufficient. If you only have Contributor, follow the [Manual Setup (Alternative)](#manual-setup-alternative) path below instead.
+> Requires **Owner** on the resource group. With Contributor only, use the [Manual Setup](#manual-setup-alternative) path.
 
 ### 3. Get the Function Host Key
 
@@ -64,7 +64,7 @@ Click **Review + create** and wait for deployment to complete (approximately 5-7
 
 ### 4. Create the Connector Connection
 
-The **Keeper Secrets Manager** connector is already published in the Microsoft Power Platform / Azure Logic Apps connector gallery -- you do **not** need to import any swagger file.
+The **Keeper Secrets Manager** connector is published as a certified connector in the Microsoft Power Platform and Azure Logic Apps connector gallery. There is nothing to import -- just create a connection.
 
 1. In Azure Logic Apps or Power Automate, add a new action and search for **"Keeper Secrets Manager"** in the connectors list.
 2. Pick any Keeper action (e.g. **List Secrets**) -- the first time you use it, you'll be prompted to create a connection.
@@ -153,16 +153,33 @@ Once the code is published, continue with [Quick Start step 3](#3-get-the-functi
 
 ---
 
+## Troubleshooting
+
+### "Operation cannot be completed without additional quota" (Dynamic VMs)
+
+Linux Consumption Function Apps need **Dynamic VM** quota in the chosen region. Some new subscriptions have **0 quota** in certain regions. Either redeploy in another region (e.g. `East US`, `West Europe`), or request a quota increase under **Subscriptions > Usage + quotas**.
+
+### "The operation 'List' is not enabled in this Key Vault's access policy"
+
+The template grants the Function App's managed identity access to the secret -- not your user account (Azure separates control-plane and data-plane permissions on Key Vault). To view or edit the secret yourself, open the Key Vault > **Access policies** > **Create**, and grant your user **Get / List / Set / Delete** on secrets. The Function App keeps working either way.
+
+### `deployFunctionCode` step shows "Running" for several minutes
+
+Normal -- typically 3-7 minutes end to end. If it exceeds 15 minutes, the script times out; re-running the deployment usually resolves it.
+
+### Function App shows no functions after deployment
+
+Wait 30-60 seconds and refresh -- the runtime needs a moment to discover the deployed code. If still missing, check **Deployment Center > Logs** in the Function App for build errors.
+
+---
+
 ## API Reference
 
 All endpoints require the `x-functions-key` header for authentication. The custom connector adds this header automatically using the API key you provided when creating the connection.
 
 ### Rate Limiting
 
-The middleware enforces **best-effort** rate limiting per connection (per `x-functions-key`) to protect the backend from accidental overload.
-
-- Limits are **in-memory per Function worker process**. They reset on cold start and do not enforce a strict global quota under scale-out.
-- When the limit is exceeded, the API returns **429 Too Many Requests** with a `Retry-After` header.
+Best-effort rate limiting is enforced per `x-functions-key` (in-memory per worker, resets on cold start). When exceeded, returns **429 Too Many Requests** with a `Retry-After` header.
 
 ### Health Check
 
@@ -314,31 +331,12 @@ The API will be available at `http://localhost:7071/api/`.
 
 ### Test the Endpoints
 
-Verify the middleware is running and connected to your vault:
-
 ```bash
-# Health check
 curl http://localhost:7071/api/health
-
-# List all secrets
 curl http://localhost:7071/api/secrets
-
-# Get a specific secret (replace <UID> with an actual secret UID)
-curl http://localhost:7071/api/secrets/<UID>
-
-# List all folders
-curl http://localhost:7071/api/folders
-
-# Create a secret (replace <FOLDER_UID> with a shared folder UID)
-curl -X POST http://localhost:7071/api/secrets \
-  -H "Content-Type: application/json" \
-  -d '{"folder_uid":"<FOLDER_UID>","title":"Test Secret","login":"user@example.com","password":"TestP@ss","url":"https://example.com"}'
-
-# Update a secret (replace <UID>)
-curl -X PUT http://localhost:7071/api/secrets/<UID> \
-  -H "Content-Type: application/json" \
-  -d '{"password":"NewPassword!2025","notes":"Updated locally"}'
 ```
+
+See [API Reference](#api-reference) for the full set of endpoints and request bodies.
 
 ---
 
@@ -362,14 +360,6 @@ When a new issue is opened (GitHub trigger)
   -> HTTP action (call external API using the fetched credential)
   -> Update issue (post results back)
 ```
-
-### Credential Provisioning
-
-Use the **Create secret** action inside a loop to provision credentials for new employees or service accounts. Combine with email connectors to send onboarding notifications.
-
-### Vault Auditing
-
-Use **List secrets** and **List folders** to enumerate all accessible records and folders, then pipe the results into Azure Table Storage, SharePoint, or email for compliance reporting.
 
 ---
 
@@ -423,26 +413,31 @@ Access is controlled at the Keeper Secrets Manager application level. In the Adm
                   | Power Automate  |
                   +--------+--------+
                            |
-                    x-functions-key
-                           |
-                  +--------v--------+
+                           v
+                  +-----------------+
                   | Keeper Secrets  |
                   | Manager         |
                   | Connector       |
                   +--------+--------+
                            |
-                  +--------v--------+        +----------------+
+              Function App URL +
+              Host Key (x-functions-key)
+                           |
+                           v
+                  +-----------------+        +----------------+
                   | Azure Function  | -----> | Azure Key Vault|
                   | (this repo)     |  MSI   | (KSM config)   |
                   +--------+--------+        +----------------+
                            |
-                     KSM SDK
-                           |
-                  +--------v--------+
+                       KSM SDK
+                           v
+                  +-----------------+
                   | Keeper Vault    |
                   | (your secrets)  |
                   +-----------------+
 ```
+
+The connector is created with the **Function App URL** and **Function App Host Key** (collected in [Quick Start step 3](#3-get-the-function-host-key)). On every call, the connector adds the host key as the `x-functions-key` header.
 
 ---
 
