@@ -78,6 +78,68 @@ You can now use **List Secrets**, **Get Secret**, **Create Secret**, **Update Se
 
 ---
 
+## Sample Workflow Templates
+
+Three ready-to-deploy Consumption Logic Apps live under [`workflowTemplates/`](workflowTemplates) so you can validate the connector end-to-end without building a workflow by hand:
+
+- **`get-secret`** -- HTTP-triggered. POST `{ "uid": "<secret-uid>" }` to its callback URL and the response body is the full secret JSON.
+- **`create-secret`** -- HTTP-triggered. POST a secret payload (`folder_uid`, `title`, `login`, `password`, `url`, `notes`) and the response body is the newly created secret JSON (including its UID).
+- **`update-secret`** -- Recurrence-triggered. Stamps `Updated at <utcNow()>` into the `notes` field of a single secret on a schedule -- a tiny smoke test for the connector + middleware.
+
+### Deploy
+
+Click any of the buttons below (or use the equivalent CLI line) after the middleware Function App from the Quick Start is up:
+
+| Workflow | Deploy |
+|---|---|
+| Get secret (HTTP) | [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fmnaqvi-ks%2Fkeeper-connector-demo%2Fmain%2FworkflowTemplates%2Fget-secret%2Fazuredeploy.json) |
+| Create secret (HTTP) | [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fmnaqvi-ks%2Fkeeper-connector-demo%2Fmain%2FworkflowTemplates%2Fcreate-secret%2Fazuredeploy.json) |
+| Update secret (recurrence) | [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fmnaqvi-ks%2Fkeeper-connector-demo%2Fmain%2FworkflowTemplates%2Fupdate-secret%2Fazuredeploy.json) |
+
+Or from a terminal, using the sibling parameters file (one per workflow):
+
+```bash
+az deployment group create \
+  --resource-group <your-rg> \
+  --template-file workflowTemplates/get-secret/azuredeploy.json \
+  --parameters @workflowTemplates/get-secret/azuredeploy.parameters.json
+```
+
+### Required inputs
+
+Edit the placeholders in each workflow's [`azuredeploy.parameters.json`](workflowTemplates) before deploying. The fields are:
+
+- **`functionAppHostname`** -- e.g. `keeper-middleware-acme.azurewebsites.net` (your Quick Start Function App).
+- **`functionHostKey`** -- the default host key from **App keys** (same value used by the connector).
+- **`secretUid`** -- *(update-secret only)* UID of the Keeper secret the recurrence run will stamp.
+- **`keeperApiIdOverride`** -- leave `""` once the certified connector ships; otherwise set to your custom-connector resource ID (see below).
+
+`connectionName` and `logicAppName` aren't in the parameters file -- they fall back to template defaults (`keeper-secrets-manager` and `la-keeper-<workflow>-sample`). Add them to the parameters file only if you want to override.
+
+### Reusing one connection across workflows
+
+`Microsoft.Web/connections` is idempotent in a resource group. Pass the **same `connectionName`** when deploying all three templates and ARM updates the existing connection in place rather than creating three separate ones -- you end up with one shared `keeper-secrets-manager` connection wired to every workflow.
+
+### Pre-cert testing against a custom connector
+
+Until the certified **Keeper Secrets Manager** connector is published, the templates' default `managedApis/keeper-secrets-manager` reference will not resolve. To test against your own custom connector, set `keeperApiIdOverride` in the parameters file to the resource ID of your `Microsoft.Web/customApis/<name>`. Find it with:
+
+```bash
+az resource list --resource-type Microsoft.Web/customApis --query "[].id" -o tsv
+```
+
+Then update the workflow's `azuredeploy.parameters.json`:
+
+```json
+"keeperApiIdOverride": {
+  "value": "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Web/customApis/<your-connector>"
+}
+```
+
+Deploy into the **same subscription as your custom connector** (`Microsoft.Web/connections` cannot reference a `customApis` resource in a different subscription). Once the certified connector ships, set `keeperApiIdOverride` back to `""` and the default just works.
+
+---
+
 ## Manual Setup (Alternative)
 
 If you prefer to provision resources by hand (for example, to fit into existing Bicep/Terraform pipelines, or because your environment restricts portal templates), follow these steps instead of clicking the Deploy to Azure button. Once the resources are in place and the code is deployed, **return to [Step 3](#3-get-the-function-host-key) above** to wire the connector up.
